@@ -8,8 +8,7 @@ import hmac
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qsl, urlencode
 
-COOKIE = "acces"
-DUREE_COOKIE = 30 * 24 * 3600
+COOKIE = "acces"  # cookie de session (sans Max-Age) : disparaît à la fermeture du navigateur
 
 
 class CleAcces:
@@ -41,7 +40,7 @@ class CleAcces:
             cible = scope["root_path"] + scope["path"] + (f"?{reste}" if reste else "")
             reponse = [
                 (b"location", cible.encode("latin-1")),
-                (b"set-cookie", f"{COOKIE}={cle_url}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={DUREE_COOKIE}".encode("latin-1")),
+                (b"set-cookie", f"{COOKIE}={cle_url}; Path=/; HttpOnly; Secure; SameSite=Lax".encode("latin-1")),
                 (b"content-length", b"0"),
             ]
             await send({"type": "http.response.start", "status": 303, "headers": reponse})
