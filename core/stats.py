@@ -2,6 +2,7 @@ import pandas as pd
 
 from .config import SEUIL_FIABLE
 from .data import get_df
+from .noms import ajouter_noms
 
 
 def _filtrer(df, type_=None, annee_min=None, annee_max=None):
@@ -103,6 +104,7 @@ def sections_commune(code_commune, type_="Tous", annee_min=None, annee_max=None)
     g["fiable"] = g["n_ventes"] >= SEUIL_FIABLE
     g["prix_m2_median"] = g["prix_m2_median"].round(0)
     g["prix_median"] = g["prix_median"].round(0)
+    g = ajouter_noms(g, code_commune)
     return g.sort_values("prix_m2_median", ascending=False).reset_index(drop=True)
 
 

@@ -76,8 +76,17 @@ Règles :
 1. [x] FastAPI : endpoints JSON appelant `core/` (prix médian par commune, recherche par budget, détail section/vente).
 2. [x] Monter Dash dans FastAPI (`/` Dash, `/api` API).
 3. [x] FastMCP en HTTP distant sur `/mcp` ; outils dérivés des endpoints.
-4. Connexion à Claude.ai et ChatGPT (connecteurs distants), tests.
-5. Mise à jour du déploiement Render (même service).
+4. [x] Connexion à Claude.ai et ChatGPT (connecteurs distants), tests.
+5. [x] Mise à jour du déploiement Render (même service).
+
+### Phase 4 : tendance, prévision et estimation de projet
+1. [x] `core/tendance.py` + onglet Dash « Tendance du marché » (courbes trimestrielles, variation par commune, comparateur).
+2. [x] `core/indice.py` (indice de prix à qualité constante par zone = couronnes autour d'Orléans), `core/profil.py` (taille par nombre de pièces, dispersion).
+3. [x] `core/prevision.py` : prévision = niveau actuel + fourchette selon l'horizon (test rétrospectif : une tendance extrapolée se trompe plus qu'un marché supposé stable).
+4. [x] `core/ml.py` : gradient boosting (médiane + quantiles 10/90 %), entraîné en LOCAL (`scripts/build_model.py` -> `data/modele_prix.joblib`), chargé sans entraînement par le serveur.
+5. [x] Onglet Dash « Mon projet (estimation) ».
+6. [x] API (`/api/tendance`, `/variation-communes`, `/communes/{code}/evolution`, `/marche`, `/estimation`, `/projet`) et 6 nouveaux outils MCP (`tendance_du_marche`, `variation_par_commune`, `evolution_d_une_commune`, `marche_et_prevision`, `estimer_un_bien`, `projet_d_achat`).
+7. [ ] Commit (dont `data/modele_prix.joblib`), push, redéploiement Render, test en ligne.
 
 ## 5. À décider plus tard
 
@@ -132,3 +141,4 @@ Règles :
 - 2026-11-20 (phase 3, MCP) : `core/services.py` (logique commune API + MCP, `api.py` simplifié pour l'appeler), `mcp_server.py` (FastMCP 4.2.3, 6 outils : `resume_donnees`, `lister_communes`, `prix_median_par_commune`, `rechercher_par_budget`, `sections_d_une_commune`, `ventes_d_une_commune` ; instructions + annotations lecture seule), `main.py` expose `/mcp` (Streamable HTTP, lifespan FastMCP passé à FastAPI). Testé : client FastMCP local (outils, erreur commune inconnue), `Host` externe accepté, build Docker OK, conteneur OK (Dash, `/api`, `/mcp` en 200, ~279 Mo RAM). `requirements.txt` refait SANS `pywin32` (Windows seulement, casserait le build Linux) : ne pas refaire un `pip freeze` brut sans le retirer. MCP public, sans clé (à décider). Reste : commit/push, redéploiement Render, connexion Claude.ai et ChatGPT (étapes 4-5).
 - 2026-11-20 (phase 3, clé d'accès) : `auth.py` (middleware ASGI `CleAcces`), branché dans `main.py`. Une seule clé, variable d'environnement `ACCESS_KEY` (absente = tout ouvert, utile en local). Acceptée via `?key=`, en-tête `X-API-Key`, `Authorization: Bearer` ou cookie `acces` ; un navigateur qui ouvre `/?key=...` reçoit le cookie et est redirigé sans la clé. Sans clé valide : 401. Testé en local (refus, 4 canaux, redirection, client MCP). Génération : `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Sur Render : Environment → ajouter `ACCESS_KEY`. URL du connecteur IA : `https://coda-webapp-projet-immobilier.onrender.com/mcp?key=<clé>`. Attention : ne pas définir de « Health Check Path » sur Render (il recevrait 401). Reste : commit/push, redéploiement, connexion Claude.ai / ChatGPT.
 - 2026-11-20 (cookie) : le cookie `acces` est un cookie de session (sans durée) : il disparaît à la fermeture du navigateur, pas de l'onglet.
+- 2026-11-20 (phase 4) : tendance, indice par zone, prévision, modèle ML, onglets Dash « Tendance » et « Mon projet », API et MCP (12 outils au total). Constats : sur 2021-2025 l'extrapolation de tendance (erreur 5-14 % à 1-4 semestres) fait pire que le niveau récent stable (3-5 %) : la prévision n'annonce ni hausse ni baisse, l'année d'achat n'élargit que la fourchette. ML testé hors échantillon (entraînement 2021-2024, test 2025) : erreur médiane 16,9 % sur le prix d'une vente (maison 18,1 %, appartement 14,4 %), fourchette 10-90 % qui contient 75,9 % des ventes (cible 80). Mieux que médiane commune x surface (19,8 %) et hédonique (18,8 %), surtout grâce à la surface de terrain. Mesuré : ~250 Mo (app+API+MCP), ~275 Mo avec le modèle chargé ; entraînement local ~10-13 s, chargement 0,5 s, fichier 0,9 Mo. Nouvelles dépendances : scikit-learn, scipy, joblib, threadpoolctl (ajoutées à requirements.txt à la main, sans pywin32). Testé : API (200/404/422/503), client FastMCP (12 outils, erreurs). Reste : commit/push, redéploiement, test en ligne. À refaire si le parquet ou scikit-learn change : `python scripts/build_model.py`.
