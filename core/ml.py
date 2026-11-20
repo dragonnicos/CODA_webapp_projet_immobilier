@@ -10,7 +10,8 @@ Principe :
 - Trois modèles : médiane, quantile 10 % et quantile 90 %. La fourchette décrit la dispersion de ventes individuelles
   (état, étage, DPE… absents de DVF), élargie de l'incertitude de marché à l'horizon visé.
 - La précision réelle est mesurée à l'entraînement : apprentissage sur 2021-2024, test sur les ventes de 2025.
-- L'entraînement se fait en LOCAL (scripts/build_model.py) ; le serveur charge data/modele_prix.joblib sans rien recalculer.
+- L'entraînement (code dans scripts/build_model.py, absent de l'image Docker) se fait en LOCAL ; ce module charge seulement
+  data/modele_prix.joblib et prédit.
 """
 import warnings
 from functools import lru_cache
@@ -19,51 +20,16 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-import sklearn
-from sklearn.ensemble import HistGradientBoostingRegressor as HGB
-from sklearn.model_selection import KFold
 
 from .config import SEUIL_FIABLE
 from .data import get_df
-from .indice import modele, zones_communes
-from .prevision import Z95, _sigma_horizon, horizon_semestres, niveau_zone
+from .indice import zones_communes
+from .prevision import _sigma_horizon, horizon_semestres
 
 ARTEFACT = Path(__file__).resolve().parent.parent / "data" / "modele_prix.joblib"
 K_TE = 8  # rétrécissement de l'encodage de commune vers la moyenne générale
 FEATURES = ["t", "surface", "pieces", "terrain", "lat", "lon", "dist", "te"]
-PARAMS = dict(max_iter=300, learning_rate=0.06, random_state=0)
 TYPES = ("Maison", "Appartement")
-
-
-def _base(df=None) -> pd.DataFrame:
-    """Ventes avec variables du modèle et cible ramenée au niveau de marché actuel."""
-    df = (get_df() if df is None else df).copy()
-    z = zones_communes().set_index("code_commune")
-    df["zone"] = df["code_commune"].map(z["zone"])
-    df["dist"] = df["code_commune"].map(z["distance_km"])
-    df["lat"] = df["latitude"].fillna(df["code_commune"].map(z["latitude"]))
-    df["lon"] = df["longitude"].fillna(df["code_commune"].map(z["longitude"]))
-    df["t"] = (df["type"] == "Maison").astype(int)
-    df["surface"] = df["surface_reelle_bati"]
-    df["pieces"] = df["nombre_pieces_principales"]
-    df["terrain"] = df["surface_terrain"]
-    df["p"] = (df["annee"] - df["annee"].min()) * 2 + (df["date_mutation"].dt.month > 6).astype(int)
-    df["ajust"] = 0.0
-    for ty in TYPES:
-        idx = modele(ty)["indice"].set_index(["zone", "p"])["log_indice"].fillna(0)
-        niv = niveau_zone(ty).set_index("zone")["log_niveau"]
-        s = df["type"] == ty
-        df.loc[s, "ajust"] = (
-            df.loc[s, "zone"].map(niv).to_numpy()
-            - pd.MultiIndex.from_frame(df.loc[s, ["zone", "p"]]).map(idx).to_numpy(dtype=float)
-        )
-    df["y"] = np.log(df["valeur_fonciere"]) + df["ajust"]
-    df["ym2"] = df["y"] - np.log(df["surface"])
-    return df
-
-
-def _te_stats(df):
-    return df.groupby(["code_commune", "t"])["ym2"].agg(["sum", "count"]), float(df["ym2"].mean())
 
 
 def _te_apply(df, stats, g):
@@ -71,67 +37,13 @@ def _te_apply(df, stats, g):
     return ((k["sum"].fillna(0) + K_TE * g) / (k["count"].fillna(0) + K_TE)).to_numpy()
 
 
-def _preparer(df):
-    """Ajoute l'encodage de commune : hors échantillon (5 plis) pour l'entraînement, pour éviter de recopier la cible."""
-    df = df.copy()
-    df["te"] = np.nan
-    g = float(df["ym2"].mean())
-    for a, b in KFold(5, shuffle=True, random_state=0).split(df):
-        stats, _ = _te_stats(df.iloc[a])
-        df.iloc[b, df.columns.get_loc("te")] = _te_apply(df.iloc[b], stats, g)
-    return df
-
-
-def _entrainer(df):
-    return {
-        "median": HGB(**PARAMS).fit(df[FEATURES], df["y"]),
-        "q10": HGB(loss="quantile", quantile=0.1, **PARAMS).fit(df[FEATURES], df["y"]),
-        "q90": HGB(loss="quantile", quantile=0.9, **PARAMS).fit(df[FEATURES], df["y"]),
-    }
-
-
-def _evaluer() -> dict:
-    """Précision mesurée hors échantillon : entraînement sur les ventes jusqu'en 2024, test sur celles de 2025."""
-    df = _base()
-    an = int(df["annee"].max())
-    tr, te = df[df["annee"] < an], df[df["annee"] == an].copy()
-    tr = _preparer(tr)
-    stats, g = _te_stats(tr)
-    te["te"] = _te_apply(te, stats, g)
-    m = _entrainer(tr)
-    p, lo, hi = (m[k].predict(te[FEATURES]) for k in ("median", "q10", "q90"))
-    ref = np.log(te["valeur_fonciere"]) + te["ajust"]
-    err = np.abs(np.exp(p - ref) - 1)
-    return {
-        "annee_test": an, "n_test": int(len(te)),
-        "erreur_mediane_pct": round(float(np.median(err)) * 100, 1),
-        "couverture_80_pct": round(float(((ref >= lo) & (ref <= hi)).mean()) * 100, 1),
-        "erreur_mediane_pct_maison": round(float(np.median(err[te["t"] == 1])) * 100, 1),
-        "erreur_mediane_pct_appartement": round(float(np.median(err[te["t"] == 0])) * 100, 1),
-    }
-
-
-def construire() -> dict:
-    """ENTRAÎNEMENT (lent, à lancer en local avec scripts/build_model.py) : modèles finaux + précision mesurée."""
-    df = _preparer(_base())
-    stats, g = _te_stats(df)
-    return {
-        "m": _entrainer(df), "stats": stats, "g": g, "n": len(df),
-        "evaluation": _evaluer(), "sklearn": sklearn.__version__,
-        "donnees_jusqu_au": get_df()["date_mutation"].max().date().isoformat(),
-    }
-
-
-def sauver(chemin=ARTEFACT) -> Path:
-    joblib.dump(construire(), chemin, compress=3)
-    return Path(chemin)
-
-
 @lru_cache(maxsize=1)
 def _modeles() -> dict:
     """Charge le modèle pré-entraîné (rapide). Aucun entraînement n'a lieu au démarrage du serveur."""
     if not ARTEFACT.exists():
         raise FileNotFoundError(f"{ARTEFACT.name} introuvable : lancer « python scripts/build_model.py » en local, puis déployer le fichier.")
+    import sklearn
+
     M = joblib.load(ARTEFACT)
     if M["sklearn"] != sklearn.__version__:
         warnings.warn(f"Modèle entraîné avec scikit-learn {M['sklearn']}, version installée : {sklearn.__version__}.")

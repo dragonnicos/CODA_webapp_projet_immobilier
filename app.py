@@ -5,12 +5,13 @@ import plotly.express as px
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dash import Dash, Input, Output, ctx, dash_table, dcc, html
+from dash import Dash, Input, Output, State, ctx, dash_table, dcc, html
 
 import core
 from core.indice import ZONES
 
-app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], title="Immobilier Loiret")
+# suppress_callback_exceptions : le contenu d'un onglet n'existe dans la page que tant qu'il est actif (voir afficher_onglet)
+app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], title="Immobilier Loiret", suppress_callback_exceptions=True)
 server = app.server  # Flask, pour gunicorn : gunicorn app:server
 
 CARTE_CENTRE = {"lat": 47.92, "lon": 2.2}
@@ -219,11 +220,11 @@ tab_projet = dbc.Container(
             [
                 _champ("Type de bien", dcc.RadioItems(["Maison", "Appartement"], "Maison", id="pj-type", inline=True,
                                                       inputClassName="me-1", labelClassName="me-3"), 3),
-                _champ("Surface habitable (m²)", dbc.Input(id="pj-surface", type="number", min=9, max=400, step=1, value=100, debounce=True), 2),
+                _champ("Surface habitable (m²)", dbc.Input(id="pj-surface", type="number", min=9, max=400, step=1, value=100), 2),
                 _champ("Pièces", dcc.Dropdown(
                     options=[{"label": "Non précisé", "value": 0}] + [{"label": str(i) if i < 5 else "5 et +", "value": i} for i in range(1, 6)],
                     value=0, clearable=False, id="pj-pieces"), 2),
-                _champ("Terrain (m²), maison", dbc.Input(id="pj-terrain", type="number", min=0, step=10, placeholder="non précisé", debounce=True), 2),
+                _champ("Terrain (m²), maison", dbc.Input(id="pj-terrain", type="number", min=0, step=10, placeholder="non précisé"), 2),
                 _champ("Année d'achat", dcc.RadioItems([2026, 2027, 2028], 2026, id="pj-annee", inline=True,
                                                        inputClassName="me-1", labelClassName="me-3"), 3),
             ],
@@ -244,6 +245,8 @@ tab_projet = dbc.Container(
             ],
             className="mb-3",
         ),
+        dbc.Button("Prédire", id="pj-go", color="primary", className="mb-2"),
+        dcc.Store(id="pj-valide"),  # critères validés par le dernier clic sur « Prédire »
         html.Div(id="pj-resume", className="my-2 fw-bold"),
         html.Div(id="pj-notice"),
         dbc.Row(
@@ -292,18 +295,29 @@ app.layout = dbc.Container(
         periode,
         dbc.Tabs(
             [
-                dbc.Tab(tab_q1, label="Prix au m² par commune", tab_id="q1"),
-                dbc.Tab(tab_q2, label="Mon budget", tab_id="q2"),
-                dbc.Tab(tab_projet, label="Mon projet (estimation)", tab_id="pj"),
-                dbc.Tab(tab_tend, label="Tendance du marché", tab_id="tend"),
-                dbc.Tab(tab_drill, label="Explorer commune → section → vente", tab_id="dd"),
+                dbc.Tab(label="Prix au m² par commune", tab_id="q1"),
+                dbc.Tab(label="Mon budget", tab_id="q2"),
+                dbc.Tab(label="Mon projet (estimation)", tab_id="pj"),
+                dbc.Tab(label="Tendance du marché", tab_id="tend"),
+                dbc.Tab(label="Explorer commune → section → vente", tab_id="dd"),
             ],
+            id="onglets",
             active_tab="q1",
         ),
+        html.Div(tab_q1, id="contenu-onglet"),  # seul l'onglet actif est dans la page (mémoire navigateur, calculs au chargement)
         html.Footer(f"Source : {core.SOURCE}", className="text-muted small my-3"),
     ],
     fluid=True,
 )
+
+
+ONGLETS = {"q1": tab_q1, "q2": tab_q2, "pj": tab_projet, "tend": tab_tend, "dd": tab_drill}
+
+
+@app.callback(Output("contenu-onglet", "children"), Input("onglets", "active_tab"), prevent_initial_call=True)
+def afficher_onglet(onglet):
+    """Ne garde dans la page que l'onglet actif : les autres ne sont ni dans le DOM ni recalculés. Ses filtres repartent de zéro."""
+    return ONGLETS.get(onglet, tab_q1)
 
 
 def _map(fig, centre=None, zoom=8.3):
@@ -595,24 +609,28 @@ def terrain_actif(type_):
 
 @app.callback(
     Output("pj-carte", "figure"), Output("pj-zones", "figure"), Output("pj-table", "data"), Output("pj-table", "columns"),
-    Output("pj-resume", "children"), Output("pj-notice", "children"),
-    Input("pj-type", "value"), Input("pj-surface", "value"), Input("pj-pieces", "value"), Input("pj-terrain", "value"),
-    Input("pj-annee", "value"), Input("pj-budget", "value"), Input("pj-peu-fiables", "value"),
+    Output("pj-resume", "children"), Output("pj-notice", "children"), Output("pj-valide", "data"),
+    Input("pj-go", "n_clicks"),
+    State("pj-type", "value"), State("pj-surface", "value"), State("pj-pieces", "value"), State("pj-terrain", "value"),
+    State("pj-annee", "value"), State("pj-budget", "value"), State("pj-peu-fiables", "value"),
 )
-def maj_projet(type_, surface, pieces, terrain, annee, budget, peu_fiables):
+def maj_projet(n_clicks, type_, surface, pieces, terrain, annee, budget, peu_fiables):
+    """La prédiction ne part que sur clic : sortir d'un champ de saisie ne déclenche aucun calcul."""
     vide = (VIDE, VIDE, [], [])
+    if not n_clicks:
+        return *vide, "Réglez les critères puis cliquez sur « Prédire ».", None, None
     crit = _critere(surface, pieces, terrain if type_ == "Maison" else None)
     if crit is None:
-        return *vide, "Indiquez une surface entre 9 et 400 m².", None
+        return *vide, "Indiquez une surface entre 9 et 400 m².", None, None
     try:
         d = core.estimer_communes(type_, crit[0], crit[1], crit[2], annee, budget)
         ev = core.evaluation_ml()
     except FileNotFoundError as e:
-        return *vide, "Modèle indisponible.", dbc.Alert(str(e), color="danger")
+        return *vide, "Modèle indisponible.", dbc.Alert(str(e), color="danger"), None
     if not peu_fiables:
         d = d[d["fiable"]]
     if d.empty:
-        return *vide, "Aucune commune pour cette sélection.", None
+        return *vide, "Aucune commune pour cette sélection.", None, None
 
     n = d["statut"].value_counts()
     resume = (
@@ -664,15 +682,20 @@ def maj_projet(type_, surface, pieces, terrain, annee, budget, peu_fiables):
     noms = {"nom_commune": "Commune", "zone": "Zone", "distance_km": "Km d'Orléans", "statut": "Statut", "prix": "Estimation (€)",
             "fourchette": "Fourchette 80 %", "prix_m2": "€/m²", "marge_pct": "Marge (%)", "n_ventes": "Ventes"}
     t = t[list(noms)].rename(columns=noms)
-    return carte, zones, t.to_dict("records"), [{"name": c, "id": c} for c in t.columns], resume, notice
+    valide = {"type": type_, "surface": surface, "pieces": pieces, "terrain": terrain, "annee": annee, "budget": budget}
+    return carte, zones, t.to_dict("records"), [{"name": c, "id": c} for c in t.columns], resume, notice, valide
 
 
 @app.callback(
     Output("pj-detail", "children"),
-    Input("pj-commune", "value"), Input("pj-type", "value"), Input("pj-surface", "value"), Input("pj-pieces", "value"),
-    Input("pj-terrain", "value"), Input("pj-annee", "value"), Input("pj-budget", "value"),
+    Input("pj-commune", "value"), Input("pj-valide", "data"),
 )
-def maj_detail(code, type_, surface, pieces, terrain, annee, budget):
+def maj_detail(code, valide):
+    """Détail d'une commune, avec les critères du dernier clic sur « Prédire » (pas ceux en cours de saisie)."""
+    if not valide:
+        return None
+    type_, surface, pieces, terrain = valide["type"], valide["surface"], valide["pieces"], valide["terrain"]
+    annee, budget = valide["annee"], valide["budget"]
     crit = _critere(surface, pieces, terrain if type_ == "Maison" else None)
     if crit is None or not code:
         return None

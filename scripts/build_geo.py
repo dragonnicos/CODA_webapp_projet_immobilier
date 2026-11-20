@@ -1,7 +1,7 @@
 """Prépare les contours (communes et sections cadastrales du Loiret) utilisés par les cartes en aplats.
 
 Sources : geo.api.gouv.fr (communes) et cadastre.data.gouv.fr (sections, Etalab). Licence Ouverte 2.0.
-Usage : python scripts/build_geo.py   (télécharge ~8 Mo, écrit data/communes.geojson et data/sections.geojson)
+Usage : python scripts/build_geo.py   (télécharge ~8 Mo, écrit data/communes.geojson et data/sections/<code_commune>.geojson)
 """
 import gzip
 import io
@@ -57,7 +57,14 @@ def main():
          "geometry": {"type": "MultiPolygon", "coordinates": arrondir(polys)}}
         for cle, polys in par_id.items()
     ]
-    (DATA / "sections.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, separators=(",", ":")))
+    # Un fichier par commune : le serveur n'en lit qu'un à la fois (le fichier unique de 12 Mo coûtait ~125 Mo de RAM une fois parsé).
+    dossier = DATA / "sections"
+    dossier.mkdir(exist_ok=True)
+    par_commune = {}
+    for f in feats:
+        par_commune.setdefault(f["id"].split("-")[0], []).append(f)
+    for code, fs in par_commune.items():
+        (dossier / f"{code}.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": fs}, separators=(",", ":")))
     print(len(communes["features"]), "communes,", len(feats), "sections")
 
 

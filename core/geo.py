@@ -11,14 +11,10 @@ def communes_geojson() -> dict:
     return json.loads((DATA / "communes.geojson").read_text())
 
 
-@lru_cache(maxsize=1)
-def _sections_par_commune() -> dict:
-    out = {}
-    for f in json.loads((DATA / "sections.geojson").read_text())["features"]:
-        out.setdefault(f["id"].split("-")[0], []).append(f)
-    return out
-
-
+@lru_cache(maxsize=8)  # un fichier par commune : on ne garde jamais les 12 Mo de tout le département en mémoire
 def sections_geojson(code_commune: str) -> dict:
     """Sections d'une commune ; id = '<code_commune>-<section>'."""
-    return {"type": "FeatureCollection", "features": _sections_par_commune().get(code_commune, [])}
+    f = DATA / "sections" / f"{code_commune}.geojson"
+    if not code_commune.isalnum() or not f.exists():
+        return {"type": "FeatureCollection", "features": []}
+    return json.loads(f.read_text())
