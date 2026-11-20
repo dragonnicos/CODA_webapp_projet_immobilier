@@ -73,15 +73,15 @@ Règles :
 4. Note : l'offre gratuite de Render s'endort après 15 min d'inactivité (premier appel ~30 s).
 
 ### Phase 3 : API + MCP
-1. FastAPI : endpoints JSON appelant `core/` (prix médian par commune, recherche par budget, détail section/vente).
-2. Monter Dash dans FastAPI (`/` Dash, `/api` API).
-3. FastMCP en HTTP distant sur `/mcp` ; outils dérivés des endpoints.
+1. [x] FastAPI : endpoints JSON appelant `core/` (prix médian par commune, recherche par budget, détail section/vente).
+2. [x] Monter Dash dans FastAPI (`/` Dash, `/api` API).
+3. [x] FastMCP en HTTP distant sur `/mcp` ; outils dérivés des endpoints.
 4. Connexion à Claude.ai et ChatGPT (connecteurs distants), tests.
 5. Mise à jour du déploiement Render (même service).
 
 ## 5. À décider plus tard
 
-- Authentification éventuelle du MCP (public ou protégé par clé).
+- ~~Authentification du MCP~~ : décidé, une clé unique `ACCESS_KEY` pour Dash, `/api` et `/mcp` (voir Avancement).
 - Filtres supplémentaires sur les données (outliers).
 
 ## 6. Conventions
@@ -128,3 +128,6 @@ Règles :
 - 2026-11-20 (phase 2, étape 1) : `Dockerfile` écrit (python:3.12-slim, 1 worker gunicorn + 4 threads, `$PORT`). `data/immobilier.parquet` retiré du `.gitignore` (sinon absent du dépôt, donc de Render). Mesuré en local : import de l'app 2,8 s, ~164 Mo de RAM (OK pour les 512 Mo de l'offre gratuite). Build Docker non testé (Docker Desktop arrêté). Reste : build local, push GitHub, service Render.
 - 2026-11-20 (phase 2, test Docker) : `docker build` OK, conteneur testé avec `PORT=10000` (HTTP 200, layout Dash OK). RAM du worker ~280 Mo au repos (limite Render gratuit 512 Mo : marge mince, geojson lus à chaque carte, à surveiller). Reste : push GitHub, service Render, vérif en ligne.
 - 2026-11-20 (fin de phase 2) : déployé sur Render (Docker, HTTPS) : https://coda-webapp-projet-immobilier.onrender.com/ (HTTP 200 vérifié). Dépôt GitHub `dragonnicos/CODA_webapp_projet_immobilier`, commit « construction docker ». Reste à surveiller : mémoire (512 Mo) et réveil après 15 min d'inactivité (~30 s). Prochaine étape : phase 3 (FastAPI + MCP).
+- 2026-11-20 (phase 3, API) : `api.py` (routeur FastAPI : `/api/resume`, `/communes`, `/prix-median`, `/recherche-budget`, `/communes/{code}/sections`, `/communes/{code}/ventes`), `main.py` (FastAPI + Dash monté via `a2wsgi.WSGIMiddleware`, doc sur `/api/docs`), `core/resumes.py` (résumé texte + JSON, réutilisable par le MCP). Réponse = `resume`, `donnees`, `source`, `filtres_source`, `avertissement`. Testé en local (200/404/422, Dash et doc OK). Dockerfile : `uvicorn main:app` à la place de gunicorn ; `requirements.txt` refait (fastapi, uvicorn, a2wsgi). Docker pas reconstruit, pas redéployé. `httpx2` (requis par le TestClient) non installé : tests faits via uvicorn + urllib. Prochaine étape : FastMCP sur `/mcp` (étape 3).
+- 2026-11-20 (phase 3, MCP) : `core/services.py` (logique commune API + MCP, `api.py` simplifié pour l'appeler), `mcp_server.py` (FastMCP 4.2.3, 6 outils : `resume_donnees`, `lister_communes`, `prix_median_par_commune`, `rechercher_par_budget`, `sections_d_une_commune`, `ventes_d_une_commune` ; instructions + annotations lecture seule), `main.py` expose `/mcp` (Streamable HTTP, lifespan FastMCP passé à FastAPI). Testé : client FastMCP local (outils, erreur commune inconnue), `Host` externe accepté, build Docker OK, conteneur OK (Dash, `/api`, `/mcp` en 200, ~279 Mo RAM). `requirements.txt` refait SANS `pywin32` (Windows seulement, casserait le build Linux) : ne pas refaire un `pip freeze` brut sans le retirer. MCP public, sans clé (à décider). Reste : commit/push, redéploiement Render, connexion Claude.ai et ChatGPT (étapes 4-5).
+- 2026-11-20 (phase 3, clé d'accès) : `auth.py` (middleware ASGI `CleAcces`), branché dans `main.py`. Une seule clé, variable d'environnement `ACCESS_KEY` (absente = tout ouvert, utile en local). Acceptée via `?key=`, en-tête `X-API-Key`, `Authorization: Bearer` ou cookie `acces` ; un navigateur qui ouvre `/?key=...` reçoit le cookie et est redirigé sans la clé. Sans clé valide : 401. Testé en local (refus, 4 canaux, redirection, client MCP). Génération : `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Sur Render : Environment → ajouter `ACCESS_KEY`. URL du connecteur IA : `https://coda-webapp-projet-immobilier.onrender.com/mcp?key=<clé>`. Attention : ne pas définir de « Health Check Path » sur Render (il recevrait 401). Reste : commit/push, redéploiement, connexion Claude.ai / ChatGPT.
